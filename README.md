@@ -50,7 +50,7 @@ Key capabilities include:
 1. Unzip the SDK archive:
 
     ```bash
-    unzip fdi-extractor-sdk-25.2.0-SNAPSHOT.zip
+    unzip fdi-extractor-sdk-24.5.0-SNAPSHOT.zip
     ```
 
 2. Review the SDK contents:
@@ -75,7 +75,7 @@ Key capabilities include:
 Use Maven to scaffold a new extractor project:
 
 ```bash
-mvn archetype:generate    -DarchetypeCatalog=internal    -DarchetypeGroupId=com.oracle.faw.extractservice    -DarchetypeArtifactId=extractservice-archetype    -DarchetypeVersion=25.2.0-SNAPSHOT    -DgroupId=oracle.apps.bi.extractservice.extract.impl    -DartifactId=customextract    -Dversion=1.0-SNAPSHOT
+mvn archetype:generate    -DarchetypeCatalog=internal    -DarchetypeGroupId=com.oracle.faw.extractservice    -DarchetypeArtifactId=extractservice-archetype    -DarchetypeVersion=24.5.0-SNAPSHOT    -DgroupId=oracle.apps.bi.extractservice.extract.impl    -DartifactId=customextract    -Dversion=1.0-SNAPSHOT
 ```
 
 ### Project Structure
@@ -164,6 +164,11 @@ Use the provided **COVID Extractor Sample** as a reference implementation for te
 ## Samples
 
 Sample extractors are available under the [`samples`](./samples) directory. These can be used as templates for building new extractors or extended for different data sources.
+
+Current samples include:
+
+- [`samples/covid-data-extractor`](./samples/covid-data-extractor): sample custom extractor implementation
+- [`samples/tcf-data-extractor`](./samples/tcf-data-extractor): sample TCF reader and pipeline implementation for processing FDI Table Change Format data
 
 ---
 
