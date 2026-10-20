@@ -95,6 +95,17 @@ marker-based range.
 
 The sink is responsible for applying inserts, updates, and deletes from each SCN to the destination system.
 
+For schemas that define `dateEffectiveCols`, explicit delete rows are matched using those columns.
+Insert and update rows continue to use `primaryKeyCols`. If `dateEffectiveCols` is absent or its
+complete key is unavailable, delete processing falls back to the primary key, preserving behavior
+for existing TCF datasets.
+
+Metadata keys are resolved against the published column names for merges,
+incremental deduplication, and deletes. If a metadata name such as `CX_TREECODE`
+is absent but `treecode` exists, the sink uses that published column. An existing
+`CX_TREECODE` always takes precedence, even if `treecode` also exists. The sink
+does not rename the data or mutate the schema metadata.
+
 Typical flow:
 
 ```java
@@ -199,23 +210,20 @@ public interface Source {
 }
 ```
 
-Pending SCNs are typically identified using:
+The pipeline identifies pending SCNs using:
 
 ```java
-Dataset<Row> pendingScns = sparkSession.read()
-                .format("fdi-tcf")
-                .option("startingScn", lastProcessedScn + 1)
-                .load(datasetRootPath)
-                .select("fdi_scn_id")
-                .distinct()
-                .sort("fdi_scn_id");
+List<Long> pendingScns =
+    source.listPendingScnIdsAfter(datasetName, lastProcessedScn);
 ```
 
-This ensures:
+Discovery lists SCN folders within the latest-full-refresh/latest-SCN marker range,
+filters out already applied SCNs, and processes them in ascending order. It stops
+before the first SCN without `_DONE`, so an unfinished publish cannot be skipped by
+advancing the watermark. No Parquet schema inference is needed for discovery.
 
-- Distinct SCNs
-- Ordered processing
-- Incremental execution
+Completed publishes without data files are processed as empty changesets using
+their `_schema.json` metadata.
 
 ### 3.6 Sink Interface and Extensibility
 
@@ -255,10 +263,10 @@ Code:
 
 ### 3.7 Full Refresh vs Incremental Processing
 
-Each changeset (SCN) contains rows with a metadata column called:
+For nonempty changesets, the processing mode comes from:
 
 ```text
-fdi_change_type
+fdi_table_change_type
 ```
 
 This identifies whether the SCN represents:
@@ -275,7 +283,7 @@ Dataset<Row> changeset = spark.read()
                            .option("endingScn", scn)
                            .load(path);
 
-Row row = changeset.select("fdi_change_type").first();
+Row row = changeset.select("fdi_table_change_type").first();
 
 boolean isFullRefresh =
     "full".equalsIgnoreCase(row.getString(0));
@@ -286,7 +294,19 @@ Processing strategy:
 - Full refresh → rebuild target dataset
 - Incremental → apply merge/update/delete logic
 
-Because all rows within an SCN share the same `fdi_change_type`, only a minimal read is required to determine the processing mode.
+Because all rows within an SCN share the same `fdi_table_change_type`, only a minimal read is required to determine the processing mode.
+
+For an empty changeset, the Delta sink uses `_schema.json.fullRefresh` instead:
+
+- Empty full refresh → clear an existing target table.
+- Empty incremental → leave existing target rows unchanged.
+- If there is no target and no Parquet schema, defer table creation until a later
+  publish provides a physical schema. A zero-row Parquet file still provides a
+  schema and can initialize an empty table.
+
+The watermark advances after successful handling, including an empty publish.
+Missing schema metadata, a missing `fullRefresh` value for an empty publish, or
+corrupt data remains an error and does not advance the watermark.
 
 ### 3.8 Watermark File
 
@@ -435,17 +455,15 @@ For each dataset:
 2. Determines the list of SCNs that have not yet been applied.
 3. Sorts SCNs in ascending order.
 
-Typical SCN discovery flow:
+SCN discovery flow:
 
 ```java
-Dataset<Row> pendingScns = sparkSession.read()
-                .format("fdi-tcf")
-                .option("startingScn", lastProcessedScn + 1)
-                .load(datasetRootPath)
-                .select("fdi_scn_id")
-                .distinct()
-                .sort("fdi_scn_id");
+List<Long> pendingScns =
+    source.listPendingScnIdsAfter(datasetName, lastProcessedScn);
 ```
+
+This uses marker-bounded SCN folders and `_DONE` completion markers, rather than
+reading Parquet rows, so completed empty publishes are also discovered.
 
 This ensures:
 
@@ -494,10 +512,10 @@ Because SCNs are processed sequentially and watermarks advance only after succes
 
 #### Full Refresh vs Incremental Processing
 
-Each SCN contains metadata column:
+For nonempty changesets, the processing mode comes from:
 
 ```text
-fdi_change_type
+fdi_table_change_type
 ```
 
 This identifies whether the changeset represents:
@@ -515,7 +533,7 @@ Dataset<Row> changeset = spark.read()
                            .load(path);
 
 Row row = changeset
-            .select("fdi_change_type")
+            .select("fdi_table_change_type")
             .first();
 
 boolean isFullRefresh =
@@ -526,6 +544,10 @@ Processing behavior:
 
 - Full refresh → rebuild target dataset
 - Incremental → apply merge/update/delete operations
+
+Empty changesets use `_schema.json.fullRefresh`: a full refresh clears existing
+target rows, while an incremental publish is a no-op. See section 3.7 for target
+initialization and watermark behavior.
 
 #### Watermark Storage and Layout
 
@@ -605,6 +627,10 @@ In other words, the datasource can work in two modes:
 
 This makes the interface suitable for both full refresh and incremental processing.
 
+The pipeline's `FdiTcfSource` handles completed publishes without data files.
+Standalone `spark.read().format("fdi-tcf")` calls still need an explicit schema
+when no Parquet file is available for schema inference.
+
 In this way:
 
 - This source becomes part of Catalyst logical plan/execution plan.
@@ -677,6 +703,8 @@ Reference:
     1. `fdi_scn_id`
     2. `fdi_table_change_type`
     3. `fdi_change_type`
+- It merges the Parquet schemas across change folders because date-effective delete files may
+  contain only the columns required to identify rows for deletion.
 - `FdiTcfScanBuilder` handles SCN-based partition pruning and schema resolution during query planning.
 
 If no `startingScn` and `endingScn` are provided, the datasource automatically resolves the valid SCN range using marker files.

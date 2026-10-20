@@ -73,49 +73,50 @@ public class FdiTcfDataSource implements TableProvider, DataSourceRegister {
 
     private Map<String, String> applyPathRestriction(Map<String, String> in) {
         Map<String, String> out = new HashMap<>(in);
+        // Date-effective delete files contain only the columns required for the delete. Merge the
+        // Parquet schemas so inserts, updates, and partial delete rows share one logical schema.
+        out.put("mergeSchema", "true");
         String base = out.get("path");
         if (base != null) {
             // Derive from marker files under basePath/markers as needed
             SparkSession spark = SparkSession.active();
             Path basePath = new Path(base);
 
-            // Resolve startingVersion strictly from latest full refresh marker
-            Optional<Long> latestFull = findLatestFullRefreshScn(basePath, spark);
-            Optional<Long> latestVersion = findLatestScn(basePath, spark);
-
-            if (!latestFull.isPresent() || !latestVersion.isPresent()) {
-                throw new RuntimeException("Markers are corrupted");
-            }
-
-            String selected = getSelectedPaths(basePath, latestFull.get(), latestVersion.get());
+            String selected = listScnPaths(basePath, spark).stream()
+                    .map(Path::toString)
+                    .collect(Collectors.joining(","));
             applySelectedPaths(out, base, selected);
         }
         return out;
     }
 
-    private String getSelectedPaths(Path basePath, Long start, Long end) {
-        SparkSession spark = SparkSession.active();
+    /** Lists marker-bounded SCN folders without requiring any Parquet rows. */
+    public static List<Path> listScnPaths(Path basePath, SparkSession spark) {
+        Optional<Long> latestFull = findLatestFullRefreshScn(basePath, spark);
+        Optional<Long> latestVersion = findLatestScn(basePath, spark);
+        if (!latestFull.isPresent() || !latestVersion.isPresent() || latestFull.get() > latestVersion.get()) {
+            throw new RuntimeException("Markers are corrupted");
+        }
 
         List<String> selectedPaths = listFiles(basePath, spark, folderName -> {
             Long scn = extractScn(folderName);
             if (scn == null)
                 return false;
-            if (start != null && scn < start)
+            if (scn < latestFull.get())
                 return false;
-            if (end != null && scn > end)
+            if (scn > latestVersion.get())
                 return false;
             return true;
         });
-        return String.join(",", selectedPaths);
+        return selectedPaths.stream().map(Path::new).collect(Collectors.toList());
     }
 
     private static Long extractScn(String folderName) {
         if (folderName == null) return null;
         // Only support legacy-style partition naming "fdi_scn_id=<value>"
         String prefix = "fdi_scn_id=";
-        int idx = folderName.indexOf(prefix);
-        if (idx >= 0) {
-            String num = folderName.substring(idx + prefix.length());
+        if (folderName.startsWith(prefix)) {
+            String num = folderName.substring(prefix.length());
             try {
                 return Long.parseLong(num);
             } catch (NumberFormatException ignore) {
@@ -180,7 +181,7 @@ public class FdiTcfDataSource implements TableProvider, DataSourceRegister {
         return filename.substring(prefix.length(), filename.length() - MARKER_SUFFIX.length());
     }
 
-    private java.util.Optional<Long> findLatestFullRefreshScn(Path basePath, SparkSession spark) {
+    private static java.util.Optional<Long> findLatestFullRefreshScn(Path basePath, SparkSession spark) {
         try {
             Path markersPath = new Path(basePath, "markers");
             List<String> names = listFileNames(markersPath, spark);
@@ -195,7 +196,7 @@ public class FdiTcfDataSource implements TableProvider, DataSourceRegister {
         }
     }
 
-    private java.util.Optional<Long> findLatestScn(Path basePath, SparkSession spark) {
+    private static java.util.Optional<Long> findLatestScn(Path basePath, SparkSession spark) {
         try {
             Path markersPath = new Path(basePath, "markers");
             List<String> names = listFileNames(markersPath, spark);

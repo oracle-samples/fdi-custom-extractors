@@ -1,7 +1,7 @@
 package com.oracle.fdi.datashare.tcf.common.vo;
 
-import java.util.List;
 import java.util.Arrays;
+import java.util.List;
 import java.util.stream.Collectors;
 
 public class DatasetSchema {
@@ -9,6 +9,7 @@ public class DatasetSchema {
     private String tableName;
     private Boolean fullRefresh;
     private String primaryKeyCols;
+    private String dateEffectiveCols;
     private List<Column> schema;
 
 
@@ -36,6 +37,14 @@ public class DatasetSchema {
         this.primaryKeyCols = primaryKeyCols;
     }
 
+    public String getDateEffectiveCols() {
+        return dateEffectiveCols;
+    }
+
+    public void setDateEffectiveCols(String dateEffectiveCols) {
+        this.dateEffectiveCols = dateEffectiveCols;
+    }
+
     public List<Column> getSchema() {
         return schema;
     }
@@ -45,10 +54,18 @@ public class DatasetSchema {
     }
 
     public List<String> getPrimaryKeyList() {
-        if (primaryKeyCols == null || primaryKeyCols.isBlank()) {
+        return parseColumnList(primaryKeyCols);
+    }
+
+    public List<String> getDateEffectiveColumnList() {
+        return parseColumnList(dateEffectiveCols);
+    }
+
+    private List<String> parseColumnList(String columns) {
+        if (columns == null || columns.isBlank()) {
             return List.of();
         }
-        return Arrays.stream(primaryKeyCols.split(","))
+        return Arrays.stream(columns.split(","))
                 .map(String::trim)
                 .filter(s -> !s.isEmpty())
                 .collect(Collectors.toList());

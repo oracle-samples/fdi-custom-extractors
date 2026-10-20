@@ -1,9 +1,10 @@
 package com.oracle.fdi.datashare.tcf.sink;
 
-import java.util.stream.Collectors;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import org.apache.hadoop.fs.Path;
+import org.apache.spark.sql.Column;
 import org.apache.spark.sql.Dataset;
 import org.apache.spark.sql.Row;
 import org.apache.spark.sql.SparkSession;
@@ -29,7 +30,6 @@ public class DeltaSink implements Sink {
 
     private static final String SOURCE_ALIAS = "source";
     private static final String TARGET_ALIAS = "target";
-    private static final String SOURCE_FDI_CHANGE_TYPE = SOURCE_ALIAS + "." + FDI_CHANGE_TYPE;
 
     // Underlying sink configuration from manifest
     private final PipelineManifest.SinkConfig sinkConfig;
@@ -69,32 +69,36 @@ public class DeltaSink implements Sink {
     }
 
     @Override
-    public WriteSummary applyChangeSets(String datasetName, Dataset changesets, DatasetSchema schema) {
+    public WriteSummary applyChangeSets(String datasetName, Dataset<Row> changesets, DatasetSchema schema) {
         // Target Delta table location for this dataset
-         Path deltaTablePath = new Path(deltaBasePath, datasetName);
+        Path deltaTablePath = new Path(deltaBasePath, datasetName);
 
-        boolean isFullRefresh = false;
         List<Row> rows = changesets.limit(1).collectAsList();
+        if (rows.isEmpty() && schema.getFullRefresh() == null) {
+            throw new IllegalArgumentException("fullRefresh metadata is required for an empty publish: " + datasetName);
+        }
+        boolean isFullRefresh = Boolean.TRUE.equals(schema.getFullRefresh());
         if (!rows.isEmpty()) {
-            if (FDI_CHANGE_TYPE_FULL_REFRESH.equalsIgnoreCase(rows.get(0).getAs(FDI_TABLE_CHANGE_TYPE))) {
-                isFullRefresh = true;
+            isFullRefresh = FDI_CHANGE_TYPE_FULL_REFRESH.equalsIgnoreCase(rows.get(0).getAs(FDI_TABLE_CHANGE_TYPE));
+        }
+
+        SparkSession spark = changesets.sparkSession();
+        String path = deltaTablePath.toString();
+        boolean targetExists = DeltaTable.isDeltaTable(spark, path);
+
+        if (isFullRefresh) {
+            log.info("Bootstrapping full refresh for {} at {}", datasetName, deltaTablePath);
+            if (targetExists) {
+                // remove existing rows without writing an empty parquet file
+                DeltaTable.forPath(spark, path).delete(expr("true"));
             }
         }
 
-        // Bootstrap the Delta table if it does not exist
-        if (isFullRefresh) {
-            log.info("Bootstrapping full refresh for {} at {}", datasetName, deltaTablePath);
-
-            SparkSession spark = changesets.sparkSession();
-            String path = deltaTablePath.toString();
-
+        // A metadata-only first full refresh has no physical schema. Defer creating its target
+        // until Parquet provides actual types and column names, even if that file has zero rows.
+        if (!targetExists) {
             Dataset<Row> bootstrapDf = changesets.drop(FDI_TABLE_CHANGE_TYPE, FDI_CHANGE_TYPE, FDI_SCN_ID);
-
-            if (DeltaTable.isDeltaTable(spark, path)) {
-                // remove existing rows without writing an empty parquet file
-                DeltaTable.forPath(spark, path).delete(expr("true"));
-            } else {
-                // create metadata-only delta table using the incoming DataFrame schema
+            if (bootstrapDf.columns().length > 0) {
                 DeltaTable.createIfNotExists(spark)
                         .location(path)
                         .addColumns(bootstrapDf.schema())
@@ -102,40 +106,65 @@ public class DeltaSink implements Sink {
             }
         }
 
-        // Open the target Delta table and build the primary-key merge predicate.
-        DeltaTable targetDeltaTable = DeltaTable.forPath(changesets.sparkSession(), deltaTablePath.toString());
-        String mergeCondition = buildMergeCondition(schema);
-
-        // For efficiency: only dedupe for non-full refresh batches.
-        Dataset<Row> sourceForMerge;
-        if (isFullRefresh) {
-            sourceForMerge = changesets;
-        } else {
-            sourceForMerge = SinkUtils.dedupeChangesets(changesets, schema);
+        if (rows.isEmpty()) {
+            WriteSummary summary = new WriteSummary();
+            summary.setStatus("SUCCESS");
+            return summary;
         }
 
-        targetDeltaTable.as(TARGET_ALIAS)
-                .merge(sourceForMerge.as(SOURCE_ALIAS), mergeCondition)
-                .whenMatched(col(SOURCE_FDI_CHANGE_TYPE).equalTo(lit(FDI_CHANGE_TYPE_DELETE))).delete()
-                .whenMatched().updateAll()
-                .whenNotMatched(col(SOURCE_FDI_CHANGE_TYPE).notEqual(lit(FDI_CHANGE_TYPE_DELETE))).insertAll()
-                .execute();
+        // Apply explicit deletes separately because date-effective delete rows may not contain the
+        // primary key or the full table schema.
+        DeltaTable targetDeltaTable = DeltaTable.forPath(changesets.sparkSession(), deltaTablePath.toString());
+        Dataset<Row> deletes = changesets
+                .filter(lower(col(FDI_CHANGE_TYPE)).equalTo(lit(FDI_CHANGE_TYPE_DELETE)));
+        if (!deletes.isEmpty()) {
+            List<String> deleteColumns = SinkUtils.getDeleteColumns(schema, deletes.columns());
+            String deleteCondition = buildMergeCondition(deleteColumns);
+            Column[] deleteColumnExpressions = deleteColumns.stream()
+                    .map(column -> col(column))
+                    .toArray(Column[]::new);
+            log.info("Deleting rows from {} using columns {}", datasetName, deleteColumns);
+            targetDeltaTable.as(TARGET_ALIAS)
+                    .merge(deletes.select(deleteColumnExpressions).as(SOURCE_ALIAS), deleteCondition)
+                    .whenMatched()
+                    .delete()
+                    .execute();
+        }
+
+        Dataset<Row> upserts = changesets
+                .filter(lower(col(FDI_CHANGE_TYPE)).notEqual(lit(FDI_CHANGE_TYPE_DELETE)));
+        if (!upserts.isEmpty()) {
+            String mergeCondition = buildMergeCondition(
+                    SinkUtils.resolveColumnNames(schema.getPrimaryKeyList(), upserts.columns()));
+
+            // For efficiency: only dedupe for non-full refresh batches.
+            Dataset<Row> sourceForMerge = isFullRefresh
+                    ? upserts
+                    : SinkUtils.dedupeChangesets(upserts, schema);
+
+            targetDeltaTable.as(TARGET_ALIAS)
+                    .merge(sourceForMerge.as(SOURCE_ALIAS), mergeCondition)
+                    .whenMatched()
+                    .updateAll()
+                    .whenNotMatched()
+                    .insertAll()
+                    .execute();
+        }
 
         WriteSummary summary = new WriteSummary();
         summary.setStatus("SUCCESS");
         return summary;
     }
 
-    private String buildMergeCondition(DatasetSchema schema) {
-        List<String> pkCols = schema.getPrimaryKeyList();
-        if (pkCols == null || pkCols.isEmpty()) {
-            throw new IllegalArgumentException("Primary key columns are empty; cannot build merge condition");
+    private String buildMergeCondition(List<String> columns) {
+        if (columns == null || columns.isEmpty()) {
+            throw new IllegalArgumentException("Merge columns are empty; cannot build merge condition");
         }
 
-        return pkCols.stream()
+        return columns.stream()
                 .map(String::trim)
                 .filter(s -> !s.isEmpty())
-                .map(pk -> SOURCE_ALIAS + ".`" + pk + "` = " + TARGET_ALIAS + ".`" + pk + "`")
+                .map(column -> SOURCE_ALIAS + ".`" + column + "` = " + TARGET_ALIAS + ".`" + column + "`")
                 .collect(Collectors.joining(" and "));
     }
 
