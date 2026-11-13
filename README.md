@@ -38,7 +38,7 @@ Key capabilities include:
    Access to FDI environment and Remote Agent.
 
 2. **Java & Maven**  
-   Ensure Java 11+ and Apache Maven are installed and configured.
+   Ensure Java 17+ and Apache Maven are installed and configured.
 
 3. **SDK Package**  
    Obtain the SDK ZIP archive from Oracle distribution.
@@ -50,7 +50,7 @@ Key capabilities include:
 1. Unzip the SDK archive:
 
     ```bash
-    unzip fdi-extractor-sdk-24.5.0-SNAPSHOT.zip
+    unzip fdi-extractor-sdk-28.2.3-SNAPSHOT.zip
     ```
 
 2. Review the SDK contents:
@@ -75,7 +75,7 @@ Key capabilities include:
 Use Maven to scaffold a new extractor project:
 
 ```bash
-mvn archetype:generate    -DarchetypeCatalog=internal    -DarchetypeGroupId=com.oracle.faw.extractservice    -DarchetypeArtifactId=extractservice-archetype    -DarchetypeVersion=24.5.0-SNAPSHOT    -DgroupId=oracle.apps.bi.extractservice.extract.impl    -DartifactId=customextract    -Dversion=1.0-SNAPSHOT
+mvn archetype:generate    -DarchetypeCatalog=internal    -DarchetypeGroupId=com.oracle.faw.extractservice    -DarchetypeArtifactId=extractservice-archetype    -DarchetypeVersion=28.2.3-SNAPSHOT    -DgroupId=oracle.apps.bi.extractservice.extract.impl    -DartifactId=customextract    -Dversion=1.0-SNAPSHOT
 ```
 
 ### Project Structure
