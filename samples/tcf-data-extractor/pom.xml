@@ -28,10 +28,10 @@
     <delta.version>3.2.0</delta.version>
     <oci-java-sdk-version>3.72.0</oci-java-sdk-version>
     <oci-hdfs-connector.version>3.4.1.0.0.3</oci-hdfs-connector.version>
-    <commons-lang3.version>3.17.0</commons-lang3.version>
-    <fasterxml.jackson.version>2.17.3</fasterxml.jackson.version>
+    <commons-lang3.version>3.18.0</commons-lang3.version>
+    <fasterxml.jackson.version>2.18.12</fasterxml.jackson.version>
     <protobuf.version>3.25.5</protobuf.version>
-    <netty.version>4.2.1.Final</netty.version>
+    <netty.version>4.1.140.Final</netty.version>
   </properties>
 
   <dependencyManagement>
@@ -43,13 +43,17 @@
       </dependency>
       <dependency>
         <groupId>io.netty</groupId>
-        <artifactId>netty-common</artifactId>
+        <artifactId>netty-bom</artifactId>
         <version>${netty.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
       </dependency>
       <dependency>
-        <groupId>com.fasterxml.jackson.core</groupId>
-        <artifactId>jackson-databind</artifactId>
+        <groupId>com.fasterxml.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
         <version>${fasterxml.jackson.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
       </dependency>
     </dependencies>
   </dependencyManagement>
@@ -108,6 +112,16 @@
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
       <version>${fasterxml.jackson.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>com.fasterxml.jackson.module</groupId>
+      <artifactId>jackson-module-scala_${scala.major.version}</artifactId>
+      <exclusions>
+        <exclusion>
+          <groupId>org.scala-lang</groupId>
+          <artifactId>*</artifactId>
+        </exclusion>
+      </exclusions>
     </dependency>
     <dependency>
       <groupId>commons-cli</groupId>
